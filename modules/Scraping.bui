@@ -1,0 +1,347 @@
+''' Normalize an already absolute HTTP(S) URL without dropping query parameters.
+Public Function CanonicalWebURL(value As String) As String
+    Dim url As String = String.Trim(value)
+    For Each character As String In String.Chars(url)
+        Dim code As Integer = String.Asc(character)
+        If code < 32 Or code = 127 Or code = 92 Then
+            Throw New InvalidArgumentException("URL cannot contain control characters or backslashes")
+        End If
+    Next
+    Dim fragment As Integer = String.IndexOf(url, "#", 0, True)
+    If fragment >= 0 Then
+        url = String.Left(url, fragment)
+    End If
+    Dim schemeEnd As Integer = String.IndexOf(url, "://", 0, True)
+    If schemeEnd < 0 Then
+        Throw New InvalidArgumentException("Use an absolute HTTP(S) URL")
+    End If
+    Dim scheme As String = String.LCase(String.Left(url, schemeEnd))
+    If scheme <> "http" And scheme <> "https" Then
+        Throw New InvalidArgumentException("Only HTTP and HTTPS URLs are supported")
+    End If
+    Dim rest As String = String.Mid(url, schemeEnd + 4)
+    Dim hostEnd As Integer = String.Len(rest)
+    For Each separator As String In ["/", "?"]
+        Dim found As Integer = String.IndexOf(rest, separator, 0, True)
+        If found >= 0 And found < hostEnd Then
+            hostEnd = found
+        End If
+    Next
+    Dim authority As String = String.LCase(String.Left(rest, hostEnd))
+    If authority = "" Or String.Contains(authority, "@", True) Or String.Contains(authority, " ", True) Then
+        Throw New InvalidArgumentException("URL must have a host and no embedded credentials")
+    End If
+    If scheme = "http" And String.Right(authority, 3) = ":80" Then
+        authority = String.Left(authority, String.Len(authority) - 3)
+    ElseIf scheme = "https" And String.Right(authority, 4) = ":443" Then
+        authority = String.Left(authority, String.Len(authority) - 4)
+    End If
+    If authority = "" Or String.Left(authority, 1) = ":" Then Throw New InvalidArgumentException("URL must have a host")
+    Dim suffix As String = String.Mid(rest, hostEnd + 1)
+    If suffix = "" Or String.Left(suffix, 1) = "?" Then
+        suffix = "/" + suffix
+    End If
+    ' Decode urlPath bytes only; reserved delimiters retain their URL meaning.
+    Dim queryAt As Integer = String.IndexOf(suffix, "?", 0, True)
+    Dim urlPath As String = suffix
+    Dim query As String = ""
+    If queryAt >= 0 Then
+        urlPath = String.Left(suffix, queryAt)
+        query = String.Substring(suffix, queryAt)
+    End If
+    Dim decoded As Bytes = Bytes.FromString("", Text.Encodings.UTF8)
+    Dim raw As Bytes = Bytes.FromString(urlPath, Text.Encodings.UTF8)
+    Dim i As Integer = 0
+    Dim hex As String = "0123456789abcdef"
+    While i < raw.Count
+        If raw.Item(i) = 37 And i + 2 < raw.Count Then
+            Dim hi As Integer = String.IndexOf(hex, String.LCase(String.Chr(raw.Item(i + 1))), 0, True)
+            Dim lo As Integer = String.IndexOf(hex, String.LCase(String.Chr(raw.Item(i + 2))), 0, True)
+            If hi >= 0 And lo >= 0 Then
+                Dim code As Integer = hi * 16 + lo
+                If code >= 128 Or (code >= 65 And code <= 90) Or (code >= 97 And code <= 122) Or (code >= 48 And code <= 57) Or code = 45 Or code = 95 Or code = 126 Then
+                    decoded.Append(code)
+                    i += 3
+                    Continue While
+                End If
+            End If
+        End If
+        decoded.Append(raw.Item(i))
+        i += 1
+    End While
+    Return scheme + "://" + authority + decoded.ToString(Text.Encodings.UTF8) + query
+End Function
+
+Public Function WebOrigin(value As String) As String
+    Dim url As String = CanonicalWebURL(value)
+    Dim schemeEnd As Integer = String.IndexOf(url, "://", 0, True)
+    Dim slash As Integer = String.IndexOf(url, "/", schemeEnd + 3, True)
+    Return String.Left(url, slash)
+End Function
+
+''' Resolve HTTP redirect references while preserving query strings and doubled slashes.
+Public Function ResolveWebURL(reference As String, baseURL As String) As String
+    Dim current As String = CanonicalWebURL(baseURL)
+    Dim location As String = String.Trim(reference)
+    Dim schemeEnd As Integer = String.IndexOf(current, "://", 0, True)
+    If String.Left(location, 2) = "//" Then
+        location = String.Left(current, schemeEnd + 1) + location
+    ElseIf String.IndexOf(location, "://", 0, True) < 0 Then
+        Dim origin As String = WebOrigin(current)
+        Dim suffix As String = String.Mid(current, String.Len(origin) + 1)
+        Dim query As Integer = String.IndexOf(suffix, "?", 0, True)
+        If query >= 0 Then
+            suffix = String.Left(suffix, query)
+        End If
+        If location = "" Or String.Left(location, 1) = "#" Then
+            location = current
+        ElseIf String.Left(location, 1) = "?" Then
+            location = origin + suffix + location
+        ElseIf String.Left(location, 1) = "/" Then
+            location = origin + location
+        Else
+            Dim colon As Integer = String.IndexOf(location, ":", 0, True)
+            Dim firstSeparator As Integer = String.Len(location)
+            For Each separator As String In ["/", "?"]
+                Dim found As Integer = String.IndexOf(location, separator, 0, True)
+                If found >= 0 And found < firstSeparator Then
+                    firstSeparator = found
+                End If
+            Next
+            If colon >= 0 And colon < firstSeparator Then
+                Throw New InvalidArgumentException("Redirect must use HTTP or HTTPS")
+            End If
+            Dim lastSlash As Integer = String.LastIndexOf(suffix, "/", True)
+            location = origin + String.Left(suffix, lastSlash + 1) + location
+        End If
+    End If
+    Dim absolute As String = CanonicalWebURL(location)
+    Dim origin As String = WebOrigin(absolute)
+    Dim suffix As String = String.Mid(absolute, String.Len(origin) + 1)
+    Dim queryIndex As Integer = String.IndexOf(suffix, "?", 0, True)
+    Dim queryText As String = ""
+    If queryIndex >= 0 Then
+        queryText = String.Mid(suffix, queryIndex + 1)
+        suffix = String.Left(suffix, queryIndex)
+    End If
+    Dim segments As Array Of String = String.Split(suffix, "/")
+    Dim normalized As Array Of String = []
+    For i As Integer = 1 To Array.Count(segments) - 1
+        Dim segment As String = segments(i)
+        If segment = ".." Then
+            If Array.Count(normalized) > 0 Then
+                normalized.RemoveAt(Array.Count(normalized) - 1)
+            End If
+            If i = Array.Count(segments) - 1 Then
+                normalized.Append("")
+            End If
+        ElseIf segment = "." Then
+            If i = Array.Count(segments) - 1 Then
+                normalized.Append("")
+            End If
+        Else
+            normalized.Append(segment)
+        End If
+    Next
+    Return origin + "/" + String.Join(normalized, "/") + queryText
+End Function
+
+Public Function PrettyJSON(value As JSONItem) As String
+    Dim options As New JSONOptions()
+    options.Compact = False
+    options.IndentSpacing = 2
+    Return Json.Stringify(value, options)
+End Function
+
+''' Build a versioned extraction recipe; selectors run against the current DOM.
+Public Class ScrapeRecipe
+    Public Property Name As String = "generic-product"
+    Public Property ItemSelector As String = ""
+    Public Property LinkSelector As String = "a[href]"
+    Public Property Fields As JSONItem = JSONItem.NewObject()
+    Public Property CaptureHTML As Boolean = True
+    Public Property MaximumRecords As Integer = 200
+
+    Public Function Configuration(sourceURL As String) As JSONItem
+        Dim configuration As JSONItem = JSONItem.NewObject()
+        configuration.Value("name") = Me.Name
+        configuration.Value("source_url") = CanonicalWebURL(sourceURL)
+        configuration.Value("item_selector") = Me.ItemSelector
+        configuration.Value("link_selector") = Me.LinkSelector
+        configuration.Value("fields") = Me.Fields
+        configuration.Value("capture_html") = Me.CaptureHTML
+        configuration.Value("max_records") = Me.MaximumRecords
+        configuration.Value("allow_external_links") = False
+        Return configuration
+    End Function
+
+    Public Function JavaScript(sourceURL As String, requestID As Integer) As String
+        Dim asset As FileSystemItem = FileSystemItem.PackageResource("scraping", "extractor.js")
+        If asset = Nil Then
+            Throw New Exception("Scraping resource missing: rebuild with the scraping package installed")
+        End If
+        Dim loaded As Result Of String, String = asset.ReadAllText()
+        If loaded.IsErr Then
+            Throw New Exception("Cannot read scraping extractor resource")
+        End If
+        Dim prefix As String = loaded.Value + "\n(function(){const requestID=" + Str(requestID) + ";try{"
+        Return prefix + "const actual=BuoyScraper.resolveURL(location.href);const expected=BuoyScraper.resolveURL(" + Json.Stringify(JSONItem.From(sourceURL)) + ");if(actual&&actual!==expected)throw new Error('Page changed before extraction');const data=BuoyScraper.extract(document," + Json.Stringify(Me.Configuration(sourceURL)) + ");window.buoy.postMessage(JSON.stringify({kind:'scrape',request_id:requestID,data}));" + _
+            "}catch(e){window.buoy.postMessage(JSON.stringify({kind:'scrape',request_id:requestID,error:String(e.message||e)}));}})();"
+    End Function
+End Class
+
+Public Enum CrawlState
+    Pending
+    Loading
+    Complete
+    Failed
+End Enum
+
+Public Class CrawlEntry
+    Public Property URL As String
+    Public Property State As CrawlState = CrawlState.Pending
+    Public Property Attempts As Integer = 0
+    Public Property RequestID As Integer = 0
+    Public Property ErrorMessage As String = ""
+    Public Property Result As JSONItem = JSONItem.Null()
+End Class
+
+''' An explicit one-page-at-a-time queue with deduplication and stale-result rejection.
+Public Class CrawlQueue
+    Public Property Entries As Array Of CrawlEntry = []
+    Public Property MaximumPages As Integer = 50
+    Public Property MaximumAttempts As Integer = 2
+    Private Property Seen As JSONItem = JSONItem.NewObject()
+    Private Property Active As CrawlEntry = Nil
+    Private Shared Property Generation As Integer = 0
+
+    Public Function Enqueue(url As String) As Boolean
+        Dim normalized As String = CanonicalWebURL(url)
+        If Me.Seen.HasKey(normalized) Then
+            Return False
+        End If
+        If Array.Count(Me.Entries) >= Me.MaximumPages Then
+            Throw New InvalidArgumentException("Crawl page limit reached")
+        End If
+        Dim entry As New CrawlEntry()
+        entry.URL = normalized
+        Me.Entries.Append(entry)
+        Me.Seen.Value(normalized) = True
+        Return True
+    End Function
+
+    Public Function NextEntry() As CrawlEntry
+        If Me.Active <> Nil Then
+            Throw New InvalidArgumentException("A page is already loading")
+        End If
+        For Each entry As CrawlEntry In Me.Entries
+            If entry.State = CrawlState.Pending Then
+                CrawlQueue.Generation += 1
+                entry.RequestID = CrawlQueue.Generation
+                entry.Attempts += 1
+                entry.State = CrawlState.Loading
+                entry.ErrorMessage = ""
+                Me.Active = entry
+                Return entry
+            End If
+        Next
+        Return Nil
+    End Function
+
+    Public Function Complete(requestID As Integer, payload As JSONItem) As Boolean
+        If Me.Active = Nil Then
+            Return False
+        End If
+        If Me.Active.RequestID <> requestID Then
+            Return False
+        End If
+        Me.Active.Result = payload
+        Me.Active.State = CrawlState.Complete
+        Me.Active = Nil
+        Return True
+    End Function
+
+    Public Function Fail(requestID As Integer, message As String, retryable As Boolean = False) As Boolean
+        If Me.Active = Nil Then
+            Return False
+        End If
+        If Me.Active.RequestID <> requestID Then
+            Return False
+        End If
+        Me.Active.ErrorMessage = message
+        Me.Active.State = CrawlState.Failed
+        If retryable And Me.Active.Attempts < Me.MaximumAttempts Then
+            Me.Active.State = CrawlState.Pending
+        End If
+        Me.Active = Nil
+        Return True
+    End Function
+
+    Public Sub Pause()
+        If Me.Active <> Nil Then
+            Me.Active.Attempts = Math.Max(0, Me.Active.Attempts - 1)
+            Me.Active.State = CrawlState.Pending
+            Me.Active = Nil
+        End If
+    End Sub
+
+    Public Function Checkpoint() As JSONItem
+        Dim checkpoint As JSONItem = JSONItem.NewObject()
+        Dim entries As JSONItem = JSONItem.NewArray()
+        For Each entry As CrawlEntry In Me.Entries
+            Dim item As JSONItem = JSONItem.NewObject()
+            item.Value("url") = entry.URL
+            item.Value("state") = entry.State.RawValue
+            item.Value("attempts") = entry.Attempts
+            item.Value("error") = entry.ErrorMessage
+            item.Value("result") = entry.Result
+            entries.Add(item)
+        Next
+        checkpoint.Value("maximum_pages") = Me.MaximumPages
+        checkpoint.Value("maximum_attempts") = Me.MaximumAttempts
+        checkpoint.Value("version") = 1.0
+        checkpoint.Value("entries") = entries
+        Return checkpoint
+    End Function
+
+    Public Shared Function Restore(checkpoint As JSONItem) As CrawlQueue
+        If checkpoint = Nil Then
+            Throw New InvalidArgumentException("Unsupported crawl checkpoint")
+        End If
+        If Not checkpoint.IsObject() Or checkpoint.Value("version").AsNumber().Or(0.0) <> 1.0 Or Not checkpoint.Value("entries").IsArray() Then
+            Throw New InvalidArgumentException("Unsupported crawl checkpoint")
+        End If
+        Dim queue As New CrawlQueue()
+        Dim entries As JSONItem = checkpoint.Value("entries")
+        Dim pageLimit As Double = checkpoint.Value("maximum_pages").AsNumber().Or(50.0)
+        Dim attemptLimit As Double = checkpoint.Value("maximum_attempts").AsNumber().Or(2.0)
+        If pageLimit < 1 Or pageLimit > 1000000 Or Math.Floor(pageLimit) <> pageLimit Then Throw New InvalidArgumentException("Invalid checkpoint page limit")
+        If attemptLimit < 1 Or attemptLimit > 1000000 Or Math.Floor(attemptLimit) <> attemptLimit Then Throw New InvalidArgumentException("Invalid checkpoint attempt limit")
+        queue.MaximumPages = pageLimit
+        queue.MaximumAttempts = attemptLimit
+        For i As Integer = 0 To entries.Count() - 1
+            Dim item As JSONItem = entries.ValueAt(i)
+            If Not queue.Enqueue(item.Value("url").AsString().Or("")) Then
+                Throw New InvalidArgumentException("Duplicate checkpoint URL")
+            End If
+            Dim index As Integer = Array.Count(queue.Entries) - 1
+            Dim entry As CrawlEntry = queue.Entries(index)
+            Dim attempts As Double = item.Value("attempts").AsNumber().Or(-1.0)
+            If attempts < 0 Or attempts > 1000000 Or Math.Floor(attempts) <> attempts Then Throw New InvalidArgumentException("Invalid checkpoint attempts")
+            entry.Attempts = attempts
+            entry.ErrorMessage = item.Value("error").AsString().Or("")
+            entry.Result = item.Value("result")
+            Dim stateNumber As Double = item.Value("state").AsNumber().Or(-1.0)
+            If stateNumber < 0 Or stateNumber > 3 Or Math.Floor(stateNumber) <> stateNumber Then Throw New InvalidArgumentException("Invalid checkpoint state")
+            Dim stateCode As Integer = stateNumber
+            If stateCode = CrawlState.Complete.RawValue Then
+                entry.State = CrawlState.Complete
+            ElseIf stateCode = CrawlState.Failed.RawValue Then
+                entry.State = CrawlState.Failed
+            ElseIf stateCode <> CrawlState.Pending.RawValue And stateCode <> CrawlState.Loading.RawValue Then
+                Throw New InvalidArgumentException("Invalid checkpoint state")
+            End If
+        Next
+        Return queue
+    End Function
+End Class
