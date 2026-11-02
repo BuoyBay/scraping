@@ -1,4 +1,4 @@
-# DOM scrape recipes and explicit crawl queues
+# DOM scrape and crawl queues
 
 A reusable source package for native `HTMLView` apps: configurable DOM extraction,
 JSON-LD product discovery, bounded same-origin link discovery, HTML provenance,
