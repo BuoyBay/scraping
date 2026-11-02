@@ -53,14 +53,6 @@ build-packages --root "$PWD" --compile-consumer scraping
 The driver checks source targets and compiles an import consumer. See the
 [API guide](docs/API.md) for behavior, limits and any host prerequisites.
 
-## Local Buoy setup
-
-On your own machine, install Buoy and run:
-
-```sh
-buoy ai init --both
-```
-
 ## Contributing
 
 [Contributing](CONTRIBUTING.md) · [License](LICENSE)
