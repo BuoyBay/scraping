@@ -74,12 +74,7 @@ crawler's query stripping and weak-reference cache behavior.
 
 ## Desktop integration
 
-The scraping workspace (not included in this repository) adds an embedded browser,
-page queue, explicit pause/resume, a 30-second load/extraction timeout, at least 1.5
-seconds between terminal page results and 2 seconds before timeout retries.
-Malformed or oversized matching bridge results terminate the entry with a visible
-error; a transient navigation race is eligible for a bounded retry. Queue links
-and Run queue are explicit actions; saving is separate from crawling.
+Applications own the browser, navigation queue, timeout/retry policy and persistence. Keep crawling and saving explicit user actions.
 
 Records can be exported as JSON or saved to CouchDB. Saving uses a stable ID derived
 from canonical URL and SKU, preserves existing user fields and attachment stubs,
@@ -98,9 +93,3 @@ streamed downloads, or retailer-specific selectors guaranteed against current si
 Embedded pages may require manual login or a custom recipe. The engine operates on
 rendered DOM; the workspace extracts on DocumentComplete or when Extract page is
 clicked. For pages that hydrate later, wait until the content appears before extracting.
-
-## Verification
-
-
-Maintainers run the private validation suite before release. See the repository README for public build instructions.
-
